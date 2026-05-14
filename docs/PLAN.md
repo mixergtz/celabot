@@ -216,6 +216,7 @@ Aunque está fuera del MVP, se diseña ahora para no rehacer la arquitectura:
   - **Consentimiento de empleados** por escrito para monitoreo (relación laboral).
   - **Retención por defecto**: clips no-evento se borran a las 72 h; eventos a 90 días; configurable.
   - **Anonimización opcional** (blur de rostros) en clips compartidos por WhatsApp.
+- **Anonimización fuerte obligatoria** para cualquier clip que salga del *tenant* del cliente (etiquetado interno o crowdsourced, ver §17): blur facial + voz + matrículas + tatuajes/uniformes distintivos. El consentimiento del dueño para ceder clips anonimizados se firma como cláusula opt-in del contrato.
   - **Cifrado**: TLS en tránsito, AES-256 en reposo (KMS por tenant).
   - **Aislamiento por tenant** en Postgres (RLS) y en almacenamiento de video (prefijos S3 + IAM por tenant).
   - **Derechos ARCO**: portal para que cualquier persona consulte / borre sus datos (procedimiento documentado).
@@ -290,6 +291,7 @@ Aunque está fuera del MVP, se diseña ahora para no rehacer la arquitectura:
 - Onboarding self-service de cámaras vía gateway.
 - Dashboard web + alertas WhatsApp + cobro recurrente (Wompi).
 - Cumplimiento Ley 1581 implementado.
+- **Crowdsourced labeling Tier 1** (ver §17): botones en alerta WhatsApp/dashboard ("Sí era robo / Falsa alarma / Sospechoso") alimentando *active learning*.
 - **Meta**: 30 tiendas pagas, < 2 falsos positivos por tienda por día.
 
 ### Fase 2 — Expansión (3 meses)
@@ -298,6 +300,7 @@ Aunque está fuera del MVP, se diseña ahora para no rehacer la arquitectura:
 - Integración POS (Bold + Loyverse para empezar): *sweethearting*, *void* sospechoso.
 - App móvil.
 - Modelos propios entrenados con datos de Fase 0–1 (arma, *concealment*).
+- **Crowdsourced labeling Tier 2** (ver §17): pipeline de anonimización fuerte + portal interno de etiquetado para equipo Celabot y operadores de confianza.
 - **Meta**: 200 tiendas, NPS ≥ 50.
 
 ### Fase 3 — Plataforma (6 meses)
@@ -305,6 +308,7 @@ Aunque está fuera del MVP, se diseña ahora para no rehacer la arquitectura:
 - Marketplace de "detectores" (alcohol a menores, mascotas, conteo de gente para *queue management*).
 - Integración con seguridad privada y línea 123.
 - Modo edge (upsell): caja con Jetson Orin Nano para tiendas con mala conectividad.
+- **Crowdsourced labeling Tier 3** (ver §17): app pública gamificada "Detective Celabot" con reputación, gold standard y consenso.
 - Multi-país: México (LFPDPPP), Perú (Ley 29733), Chile.
 
 ---
@@ -367,9 +371,12 @@ celabot/
 │   ├── reasoner/               # VLM clients (Gemini/Claude/GPT)
 │   ├── alerts/                 # WhatsApp/Push/Voice
 │   ├── api/                    # Backend de negocio
-│   └── ops/                    # Cron, retención, billing
+│   ├── ops/                    # Cron, retención, billing
+│   ├── anonymizer/             # Blur facial/voz/matrículas (§17)
+│   └── labeling/               # Servicio de etiquetado Tier 1/2/3 (§17)
 ├── web/                        # Next.js dashboard
 ├── mobile/                     # React Native app (Fase 1.5)
+├── detective/                  # App pública "Detective Celabot" (Fase 3, §17)
 ├── ml/
 │   ├── datasets/
 │   ├── training/
@@ -389,6 +396,7 @@ celabot/
 4. **Política con datos del cliente para entrenar modelos**: ¿opt-in con descuento? ¿opt-out? Decisión comercial pendiente.
 5. **¿Operación 24/7 humana en Fase 0–1?** Un SOC humano pequeño durante el día sube precisión pero también costo. Pilotear con turnos 10:00–22:00.
 6. **Reconocimiento facial**: ¿se ofrece como producto separado (lista de personas problema reportadas por el dueño) o se descarta por riesgo regulatorio? Recomendación: **descartar en MVP**.
+7. **Incentivos de Tier 3** (§17): ¿puntos canjeables, sorteos mensuales, donación a fundación, descuento en suscripción si el etiquetador es también cliente? Decisión pendiente; evitar pago por etiqueta para no incentivar *click farms*.
 
 ---
 
@@ -397,5 +405,126 @@ celabot/
 1. Validar con 3–5 dueños de tienda en Bogotá: entrevistas de 30 min, foco en disposición de pago y casos de uso reales.
 2. Prototipo end-to-end con **una sola cámara, un solo caso (arma)** en GCP: RTSP → mediaMTX → frame sampler → YOLO arma → Gemini confirm → WhatsApp.
 3. ADRs para: (a) elección de nube, (b) protocolo de relay (SRT vs WebRTC), (c) capa de abstracción de modelos.
-4. Setup legal: borrador de contrato de tratamiento de datos + aviso en tienda + política de privacidad.
+4. Setup legal: borrador de contrato de tratamiento de datos + aviso en tienda + política de privacidad **incluyendo cláusula opt-in para ceder clips anonimizados al programa de etiquetado (§17)**.
 5. Crear repo con la estructura de §14 y CI básico.
+6. Diseñar las **tres preguntas observables** del Tier 1 (§17.2) y las plantillas de botones de WhatsApp asociadas.
+
+---
+
+## 17. Crowdsourced labeling — "¿iba a robar o no?"
+
+> Objetivo: convertir cada alerta y cada clip ambiguo en una etiqueta utilizable para mejorar los modelos, sin sesgar el sistema hacia predicciones de intención ni violar privacidad.
+
+### 17.1 Principio: etiquetar comportamiento observable, no intención
+
+Nunca preguntamos "¿iba a robar?" — esa pregunta no tiene verdad verificable y arrastra sesgos del etiquetador (raza, vestimenta, edad). Preguntamos por **hechos observables** y por el **resultado** cuando se conoce:
+
+- Comportamiento: ¿ocultó un objeto? ¿salió sin pasar por caja? ¿hubo agresión?
+- Resultado (gold): ¿el inventario faltó? ¿el dueño confirmó hurto consumado? ¿se mostró arma?
+
+Los modelos se entrenan contra estas etiquetas factuales. Una "predicción de robo" del sistema en producción es la salida del clasificador combinando esas señales — no una etiqueta de entrenamiento.
+
+### 17.2 Tres tiers con audiencias y riesgos distintos
+
+| Tier | Audiencia | Fase | Riesgo legal | Función |
+|------|-----------|------|--------------|---------|
+| **1** | Dueño / empleado del comercio sobre **sus propias** alertas | **MVP / Fase 1** | Bajo (datos propios) | *Active learning* de alta señal, mejora alertas del mismo cliente |
+| **2** | Equipo Celabot + operadores de confianza con NDA | **Fase 2** | Medio (clips anonimizados, contrato) | Etiquetado profesional de clips ambiguos y casos raros |
+| **3** | Crowd público gamificado ("Detective Celabot") | **Fase 3** | Alto (público), exige anonimización fuerte + ToS + opt-in del cliente | Volumen masivo de etiquetas, marketing y *brand awareness* |
+
+### 17.3 Tier 1 — Dueño / empleado (MVP)
+
+**Dónde**: botones en la alerta WhatsApp y en el dashboard. También accesible desde "Historial de alertas".
+
+**Preguntas (responde el cliente):**
+1. ¿Esta alerta era real? *(Sí / No / No estoy seguro)*
+2. *(Si sí)* ¿Qué pasó exactamente? *(Ocultó un objeto / Salió sin pagar / Agresión / Arma / Otro)*
+3. *(Opcional, 24 h después)* ¿Confirmaste pérdida de inventario asociada? *(Sí / No / No revisé)*
+
+**Reglas:**
+- La etiqueta del dueño se considera de **alta confianza** pero no infalible. Pesa 0.8 vs 1.0 de una etiqueta gold verificada con inventario.
+- Si el dueño marca "falsa alarma" tres veces seguidas en el mismo tipo de evento, se sube el umbral de confianza del modelo para ese cliente automáticamente.
+- Todo se versiona; el dueño puede corregir su propia etiqueta dentro de 7 días.
+
+**Volumen esperado**: 100% de las alertas, ~50 al mes por tienda = ~5 000 etiquetas/mes con 100 tiendas.
+
+### 17.4 Tier 2 — Equipo interno (Fase 2)
+
+**Quién**: 3–5 operadores Celabot con contrato, NDA y entrenamiento. Pueden ser contractors externos (empresas de etiquetado tipo iMerit, Sama, o local).
+
+**Qué reciben**: clips **ya anonimizados** (§17.6), priorizados por *active learning* (incertidumbre del VLM en 0.3–0.7) o clips donde el dueño marcó "no estoy seguro".
+
+**Interfaz**: portal web propio con teclas rápidas, similar a CVAT pero con flujo simplificado de pregunta sí/no/no se ve, tres veces (las tres preguntas observables).
+
+**Calidad**:
+- **3 etiquetadores por clip**, consenso por mayoría (algoritmo Dawid-Skene cuando hay >3).
+- **5% de gold standard intercalado** (clips con verdad conocida por inventario) para medir reputación.
+- Etiquetadores por debajo de 85% de acierto en gold se reentrenan o se reemplazan.
+
+**Volumen**: ~10 000 clips/mes en Fase 2.
+
+### 17.5 Tier 3 — App pública "Detective Celabot" (Fase 3)
+
+**Producto**: app móvil + web gamificada. El usuario ve un clip de 8 s anonimizado y contesta una pregunta observable. Mecánicas:
+
+- **Tinder-style**: swipe izquierda (no pasó) / derecha (sí pasó) / arriba (no se ve).
+- **Rachas y niveles**: "Detective Junior" → "Detective Senior" → "Inspector".
+- **Leaderboards** semanales por ciudad.
+- **Incentivos** (ver §15, decisión 7): puntos canjeables, sorteos mensuales (mercado, bonos), donación a fundación, descuento si el etiquetador también es cliente. **Sin pago por etiqueta** para evitar *click farms*.
+
+**Calidad**:
+- Cada clip se muestra a **5 etiquetadores** mínimo; se requiere consenso ≥ 4/5 para considerar etiqueta firme.
+- Reputación con peso bayesiano; etiquetadores nuevos pesan poco hasta acumular gold.
+- Detección de bots y patrones de respuesta uniforme.
+- Cuarentena automática si la tasa de acierto en gold baja de 70%.
+
+**Onboarding**: tutorial obligatorio con 10 clips de práctica antes de etiquetar producción.
+
+**Marketing**: la app es también canal de adquisición. Slogan tipo "Ayuda a proteger las tiendas de tu barrio. Conviértete en Detective Celabot."
+
+### 17.6 Pipeline de anonimización (requisito para Tier 2 y 3)
+
+Antes de que un clip salga del *tenant* del cliente:
+
+1. **Detección + blur facial** (RetinaFace o YOLO-face) con seguimiento para mantener blur a lo largo del clip.
+2. **Blur de matrículas** (LP detector).
+3. **Voz**: silenciado total o sustitución por audio sintético neutral (Fase 2 cuando exista pipeline de audio).
+4. **Tatuajes / uniformes con texto / placas de empleado**: detector específico + blur.
+5. **Metadatos limpiados**: sin nombre de tienda, dirección, hora exacta (solo franja horaria), ni ID de cámara identificable.
+6. **Verificación humana** en muestra aleatoria del 1% antes de enviar a Tier 3, hecha por Tier 2.
+
+Si el pipeline falla en cualquier paso, el clip **no sale** del tenant.
+
+### 17.7 Loop de aprendizaje cerrado
+
+```
+Alerta → Tier 1 (dueño) ──┬─► etiqueta confirmada → gold (peso 0.8)
+                          │
+                          └─► "no estoy seguro" / VLM incierto → Tier 2 → consenso 3/3 (peso 0.9)
+                                                              │
+                                                              └─► sigue incierto → Tier 3 → consenso 4/5 (peso 0.6)
+
+Inventario / dueño reporta hurto consumado → gold absoluto (peso 1.0) → re-etiqueta clips relacionados
+```
+
+Cada etiqueta entra al *feature store* con: peso, tier, identidad anónima del etiquetador, timestamp, consenso. El entrenamiento usa pesos como *sample weights*.
+
+### 17.8 Riesgos específicos del crowdsourcing
+
+| Riesgo | Mitigación |
+|--------|------------|
+| Filtración de clip identificable | Verificación humana del pipeline de anonimización; auditoría externa anual; clip *kill switch* (botón para retirar clip del programa) |
+| Sesgo demográfico introducido por crowd | Auditoría periódica de tasas de etiquetado por demografía aparente; balanceo de exposición de clips |
+| Etiquetadores recrean intención ("se ve sospechoso") | Preguntas estrictamente observables; gold con verdad de inventario domina el peso |
+| Adversarios etiquetando para sabotear modelo | Reputación + gold + límite de etiquetas por usuario/día + detección de patrones |
+| Cliente revoca consentimiento de ceder clip | Tombstone que propaga borrado a copias en Tier 2/3 y datasets de entrenamiento; *retraining* programado |
+| Ley 1581: derecho de supresión de la persona grabada | Hash perceptual del clip permite localizar y eliminar; portal ARCO ya cubierto en §7 |
+
+### 17.9 Métricas del programa
+
+- **Cobertura**: % de alertas con al menos una etiqueta humana.
+- **Latencia de etiqueta**: tiempo desde alerta hasta consenso firme.
+- **Calidad por tier**: acuerdo con gold (precisión vs verdad de inventario).
+- **Impacto en modelo**: ΔF1 del modelo entre versión sin/con etiquetas crowd.
+- **Costo por etiqueta utilizable** (después de filtros de calidad).
+- **Engagement Tier 3**: DAU, etiquetas por sesión, retención D7/D30.
